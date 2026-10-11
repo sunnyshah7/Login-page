@@ -1,13 +1,17 @@
 from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
+from app.core.security import create_access_token, decode_access_token
 from app.db.database import get_db
-from app.schemas.auth import LoginRequest, SignupResponse, UserCreate, UserRead
+from app.models.user import User
+from app.schemas.auth import LoginRequest, SignupResponse, TokenResponse, UserCreate, UserRead
 from app.services.auth_service import EmailAlreadyRegistered, authenticate_user, create_user
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
 @router.get("/health")
@@ -36,13 +40,44 @@ def signup(user: UserCreate, db: Session = Depends(get_db)):
     )
 
 
-@router.post("/login", response_model=UserRead)
+@router.post("/login", response_model=TokenResponse)
 def login(credentials: LoginRequest, db: Session = Depends(get_db)):
     user = authenticate_user(db, str(credentials.email), credentials.password)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token = create_access_token(subject=str(user.id))
+    return TokenResponse(access_token=access_token)
+
+
+@router.get("/me", response_model=UserRead)
+def get_me(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    subject = decode_access_token(token)
+    if subject is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        user_id = int(subject)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
